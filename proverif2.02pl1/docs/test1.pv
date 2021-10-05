@@ -1,0 +1,245 @@
+(* fog_auth.pv: Script of the PARFAIT protocol, assuming legitimate Fog Node *)
+
+(* ============== Declarations ============== *)
+(* The channels used for the communication *)
+
+free c_IoT_Cloud:channel. (* channel used for IoT-Cloud communication *)
+free c_IoT_Fog:channel. (* channel used for IoT-Fog communication *)
+free c_Fog_Cloud:channel. (* channel used for Fog-Cloud communication *)
+free c_Cloud:channel [private]. (* channel used for Cloud communication *)
+free c_IoT_Cloud_reg:channel [private]. (* IoT-Cloud channel in registration *)
+free c_IoT_Fog_reg:channel [private]. (* IoT-Fog channel in registration *)
+
+(* Identifier of sensor behind the GW*)
+free s_n:bitstring [private].
+
+(* Hashing Function *)
+fun hash(bitstring):bitstring.
+
+(* Symmetric encryption *)
+(* Symmetric Secret Key *)
+type sskey.
+
+(* Symmetric encryption *)
+fun senc(bitstring, sskey):bitstring.
+
+(* Symmetric decryption *)
+reduc forall x:bitstring, k:sskey; sdec(senc(x,k),k)=x.
+
+(* Public key encryption *)
+(* Private and Public Keys *)
+type skey.
+type pkey.
+
+(* exponentiation function *)
+fun exp_priv(skey):pkey.
+fun exp_pub(pkey,skey):pkey.
+
+(* signature *)
+fun sign(bitstring,skey):bitstring.
+reduc forall x:bitstring, k:skey; checksign( sign(x, k), exp_priv(k)) = x.
+
+(* Public Key Encryption *)
+fun penc(bitstring,pkey):bitstring.
+
+(* Public Key Decryption *)
+reduc forall x:bitstring,k:skey;pdec(penc(x,exp_priv(k)),k)=x.
+
+(* CP-ABE Primitives *)
+type cpabe_att_skey_gen.
+type cpabe_att_skey_individual.
+type cpabe_att_pkey.
+type cpabe_policy.
+
+fun gen_attribute_skey_individual(cpabe_att_skey_gen,bitstring):cpabe_att_skey_individual.
+
+fun gen_att_pkey(cpabe_att_skey_individual):cpabe_att_pkey.
+
+fun gen_keystore(cpabe_att_skey_individual,cpabe_att_skey_individual):cpabe_att_skey_individual.
+
+fun merge_attributes(cpabe_att_pkey,cpabe_att_pkey):cpabe_att_pkey.
+
+fun gen_policy(cpabe_att_pkey):cpabe_policy.
+
+fun cpabe_genpubkey(cpabe_att_skey_gen):cpabe_att_pkey.
+
+fun cpabe_enc(bitstring, cpabe_policy):bitstring.
+
+reduc forall x:bitstring,ID:bitstring,k1:cpabe_att_skey_gen,k2:cpabe_att_skey_gen;cpabe_dec(cpabe_enc(x,gen_policy(merge_attributes(cpabe_genpubkey(k1),cpabe_genpubkey(k2)))),gen_keystore(gen_attribute_skey_individual(k1,ID),gen_attribute_skey_individual(k2,ID)))=x.
+
+
+(* Functions for handling type conversions *)
+fun bitstring_to_key(bitstring):sskey [data, typeConverter].
+fun key_to_bitstring(sskey):bitstring [data, typeConverter].
+
+fun bitstring_to_pkey(bitstring):pkey [data, typeConverter].
+fun pkey_to_bitstring(pkey):bitstring [data, typeConverter].
+
+fun cpabesecretkey_to_bitstring(cpabe_att_skey_individual):bitstring [data, typeConverter].
+fun cpabepublickey_to_bitstring(cpabe_att_pkey):bitstring [data, typeConverter].
+
+fun bitstring_to_cpabesecretkey(bitstring):cpabe_att_skey_individual [data, typeConverter].
+fun bitstring_to_cpabepublickey(bitstring):cpabe_att_pkey [data, typeConverter].
+
+
+(* Queries *)
+event begin_AtA().
+event end_GW_Cloud(bitstring,bitstring).
+event begin_Fog().
+event end_GW_Fog().
+
+query x1:bitstring,x2:bitstring; inj-event(end_GW_Cloud(x1,x2)) ==> inj-event(begin_AtA()).
+query x1:bitstring,x2:bitstring; inj-event(end_GW_Fog()) ==> inj-event(begin_Fog()).
+
+(* Protection against eavesdropping *)
+query attacker (s_n).
+
+(* Definition of Functions *)
+let gateway_operations(s_n:bitstring, U_n:bitstring, pwd_n:bitstring)=
+	
+	(* Registration *)
+	in(c_IoT_Cloud_reg, (secretKey_AtA_IoT_string:bitstring));	
+	let secretKey_AtA_IoT=bitstring_to_key(secretKey_AtA_IoT_string) in
+
+	in(c_IoT_Fog_reg, secretKey_IoT_Fog_string:bitstring);
+	let secretKey_IoT_Fog=bitstring_to_key(secretKey_IoT_Fog_string) in
+
+	in(c_IoT_Cloud, AtA_pkey:pkey);
+	out(c_IoT_Cloud_reg, (s_n,U_n,pwd_n));
+	
+	(* Cloud Auth *)	
+
+	let hashed_U_n = hash(U_n) in
+	let hashed_pwd_n = hash(pwd_n) in
+	let enc_msg_1_cloud = senc( (s_n, hashed_U_n, hashed_pwd_n), secretKey_AtA_IoT) in
+	out(c_IoT_Cloud,  enc_msg_1_cloud);
+	
+	(* Here the GW thinks it has started the protocol with the AtA *)
+ 	event begin_AtA(); 
+
+	in(c_IoT_Cloud, enc_msg_2_cloud:bitstring);
+	let (token:bitstring, eph_id:bitstring, eph_att:bitstring, eph_publickey_string:bitstring, eph_secretkey_string:bitstring)=sdec( enc_msg_2_cloud, secretKey_AtA_IoT) in
+  	
+	(* Fog Auth *)
+	let enc_msg_1_Fog=senc( (eph_id, eph_att, eph_publickey_string, token), secretKey_IoT_Fog) in
+	out(c_IoT_Fog, enc_msg_1_Fog);
+	
+	(* Here the GW thinks it has started the protocol with the Fog *)
+ 	event begin_Fog(); 
+
+	in(c_IoT_Fog, enc_msg_2_Fog:bitstring);
+	let challenge=sdec(enc_msg_2_Fog,secretKey_IoT_Fog) in
+	let eph_secretkey = bitstring_to_cpabesecretkey(eph_secretkey_string) in
+	let response = cpabe_dec(challenge, eph_secretkey) in
+	let enc_msg_Fog_3 = senc(response,secretKey_IoT_Fog) in
+	out(c_IoT_Fog, enc_msg_Fog_3);
+	0.
+    
+let FogNode_operations()=
+        (* Reg. Phase *)
+	in(c_Fog_Cloud, AtA_pkey:pkey);
+	
+	new secretKey_IoT_Fog:sskey; (* This is the link for the secure IoT-Fog comm. link *)
+	let secretKey_IoT_Fog_string=key_to_bitstring(secretKey_IoT_Fog) in
+	out(c_IoT_Fog_reg, secretKey_IoT_Fog_string);
+
+	(* Fog Auth *)
+	in(c_IoT_Fog, enc_msg_1_Fog:bitstring );
+	let (eph_id:bitstring, eph_att:bitstring, eph_publickey_string:bitstring, token:bitstring)=sdec(enc_msg_1_Fog, secretKey_IoT_Fog) in
+
+	let dec_sign=checksign(token, AtA_pkey) in
+	let hashed_token_content = hash((eph_id, eph_att)) in
+	if hashed_token_content =  dec_sign then
+
+		(* Here the Fog thinks it has successfully completed the authentication with the Gateway *)
+		event end_GW_Fog();
+
+		(* Token verified. Go ahead*)
+		
+		let eph_publickey = bitstring_to_cpabepublickey(eph_publickey_string) in
+		let eph_policy = gen_policy(eph_publickey) in
+		new nonce:bitstring;
+		let challenge=cpabe_enc(nonce, eph_policy) in
+		let enc_msg_2_Fog = senc(challenge, secretKey_IoT_Fog) in
+		out(c_IoT_Fog, enc_msg_2_Fog);
+
+		in(c_IoT_Fog, enc_msg_Fog_3:bitstring);
+		let response=sdec(enc_msg_Fog_3,secretKey_IoT_Fog) in
+		if response=nonce then
+			(* Authorized *)
+			0
+		else
+		0
+	else
+        0.
+
+let AtA_operations()=
+     
+	(* Registration *)
+	new AtA_skey:skey;
+	let (AtA_pkey:pkey) = exp_priv(AtA_skey) in
+	new secretKey_AtA_IoT:sskey; (* This is the secure key used in the link AtA-IoT *)
+	let secretKey_AtA_IoT_string=key_to_bitstring(secretKey_AtA_IoT) in
+	out(c_IoT_Cloud_reg, (secretKey_AtA_IoT_string));
+	out(c_IoT_Cloud, AtA_pkey);
+	out(c_Fog_Cloud, AtA_pkey);
+	in(c_IoT_Cloud_reg, (s_n:bitstring, U_n:bitstring,pwd_n:bitstring) );
+
+	(* Cloud Auth*)
+	in(c_IoT_Cloud, enc_msg_1_cloud:bitstring);
+	let (remote_Sn:bitstring, remote_U_n:bitstring, remote_pwd_n:bitstring) = sdec(enc_msg_1_cloud, secretKey_AtA_IoT) in
+
+	if remote_Sn = s_n then
+		if remote_U_n = U_n then
+			if remote_pwd_n = pwd_n then
+
+				(* Here the AtA thinks it has successfully completed the authentication with the Gateway *)
+   				event end_GW_Cloud(U_n,pwd_n); 
+		   
+				(* valid credentials, go ahead *)
+				out(c_Cloud, (remote_Sn));
+
+				in(c_Cloud, (eph_id:bitstring, eph_att:bitstring,eph_secret_key:cpabe_att_skey_individual,eph_public_key:cpabe_att_pkey));
+				let eph_secretkey_string=cpabesecretkey_to_bitstring(eph_secret_key) in
+				let eph_publickey_string=cpabepublickey_to_bitstring(eph_public_key) in
+				let hashed_token_content = hash((eph_id,eph_att,eph_publickey_string)) in
+				let token = sign(hashed_token_content,AtA_skey) in
+				let enc_msg_2_cloud=senc( (token, eph_id, eph_att, eph_publickey_string, eph_secretkey_string),  secretKey_AtA_IoT) in
+				out(c_IoT_Cloud, enc_msg_2_cloud);
+				0
+			else
+				0
+		else
+			0
+	else
+	    0.
+
+
+let AzA_operations(M_k:cpabe_att_skey_gen)=
+
+	(* Registration *)
+	in(c_Cloud, (remote_Sn:bitstring));
+
+	(* Gen. Eph. Identity and Attribute*)
+	new eph_id:bitstring;
+	new eph_att:bitstring;
+	let (eph_secret_key:cpabe_att_skey_individual) = gen_attribute_skey_individual(M_k,(eph_id, eph_att)) in
+	let (eph_public_key)=gen_att_pkey(eph_secret_key) in
+	out(c_Cloud, (eph_id,eph_att,eph_secret_key,eph_public_key));
+       
+	0.
+ 
+(* Definition of the main process *)
+process      
+ 
+	(* Username and Password Generation for user *)
+	new s_n:bitstring;
+	new U_n:bitstring;
+	new pwd_n:bitstring;
+
+	(* Master Key Generation for CP-ABE*)
+	new M_k:cpabe_att_skey_gen;
+
+	(* Execution of the protocol *)
+	( !(gateway_operations(s_n, U_n, pwd_n)) | !(FogNode_operations()) | !(AtA_operations()) | !(AzA_operations(M_k)) )
+	
