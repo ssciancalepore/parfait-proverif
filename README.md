@@ -1,4 +1,4 @@
-This is the code used to verify some of the security properties of the PARFAIT protocol, presented in the paper "PARFAIT: Privacy-Preserving, Secure, and Low-Delay Service Access in Fog-enabled IoT Ecosystems".
+This is the source code used to verify some of the security properties of the PARFAIT protocol, presented in the paper "PARFAIT: Privacy-Preserving, Secure, and Low-Delay Service Access in Fog-enabled IoT Ecosystems".
 
 The folder contains two tests.
 
